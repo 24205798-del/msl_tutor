@@ -176,7 +176,13 @@ with col1:
     ctx = webrtc_streamer(
         key="msl-quest", 
         video_processor_factory=EduQuestTransformer,
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+        rtc_configuration={
+            "iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+                {"urls": ["stun:stun1.l.google.com:19302"]},
+                {"urls": ["stun:stun2.l.google.com:19302"]},
+            ]
+        },
         media_stream_constraints={"video": True, "audio": False}
     )
     
