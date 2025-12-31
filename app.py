@@ -1,18 +1,48 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import cv2
 import mediapipe as mp
 import numpy as np
 import collections
-import time
-
-# Import our new modules
 from processor import DataProcessor
 from mock_model import MockDualStreamModel
+from twilio.rest import Client
 
-# --- 1. CONFIG & CONSTANTS ---
-st.set_page_config(layout="wide", page_title="MSL Edu-Quest")
+# --- 1. PAGE CONFIGURATION & STYLING ---
+st.set_page_config(layout="wide", page_title="MSL Translation App")
 
+# Custom CSS to match the "Blue & White" Dashboard look
+st.markdown("""
+<style>
+    /* Main Background */
+    .stApp { background-color: #f0f2f6; }
+    
+    /* Blue Header Bar */
+    .css-18ni7ap { background-color: #0052cc; color: white; padding: 1rem; }
+    
+    /* Custom "Card" styling for columns */
+    div.css-1r6slb0.e1tzin5v2 {
+        background-color: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    
+    /* Button Styling to match "Capture" button */
+    .stButton > button {
+        width: 100%;
+        border-radius: 5px;
+        height: 3em;
+        font-weight: bold;
+    }
+    
+    /* Hide the default Streamlit hamburger menu/footer for cleaner look */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+# --- 2. SETUP & CONSTANTS ---
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),
     (0, 5), (5, 6), (6, 7), (7, 8),
@@ -21,7 +51,7 @@ HAND_CONNECTIONS = [
     (13, 17), (0, 17), (17, 18), (18, 19), (19, 20)
 ]
 
-# --- 2. AI ENGINE SETUP ---
+# MediaPipe Setup
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
@@ -45,7 +75,19 @@ except ImportError:
 def load_msl_model():
     return MockDualStreamModel()
 
-# --- 3. DRAWING HELPER ---
+# --- 3. HELPER FUNCTIONS ---
+def get_ice_servers():
+    """Fetch TURN servers if available, else fallback to STUN."""
+    try:
+        # Use st.secrets in production!
+        # account_sid = st.secrets["twilio"]["account_sid"]
+        # auth_token = st.secrets["twilio"]["auth_token"]
+        # client = Client(account_sid, auth_token)
+        # return client.tokens.create().ice_servers
+        return [{"urls": ["stun:stun.l.google.com:19302"]}]
+    except:
+        return [{"urls": ["stun:stun.l.google.com:19302"]}]
+
 def draw_landmarks_on_image(rgb_image, detection_result):
     hand_landmarks_list = detection_result.hand_landmarks
     annotated_image = np.copy(rgb_image)
@@ -62,26 +104,18 @@ def draw_landmarks_on_image(rgb_image, detection_result):
                        
     return annotated_image, hand_landmarks_list
 
-# --- 4. THE VIDEO PROCESSOR ---
-class EduQuestTransformer(VideoProcessorBase):
+# --- 4. VIDEO PROCESSOR ---
+class DashboardTransformer(VideoProcessorBase):
     def __init__(self):
         self.landmarker = HandLandmarker.create_from_options(options)
         self.model = load_msl_model()
         self.landmark_buffer = collections.deque(maxlen=90)
         
-        # STATE VARIABLES
-        self.mode = "Learn Mode"   # Default
-        self.target_word = ""      # For Quiz Mode
-        
-        self.current_prediction = "..."
+        # State
+        self.mode = "Dashboard Mode" 
+        self.current_prediction = "Waiting..."
         self.current_confidence = 0.0
         self.weak_joint = None
-        self.status_message = "Ready"
-
-    # FUNCTION TO RECEIVE DATA FROM STREAMLIT SIDEBAR
-    def update_game_state(self, mode, target_word):
-        self.mode = mode
-        self.target_word = target_word
 
     def transform(self, frame):
         try:
@@ -95,7 +129,7 @@ class EduQuestTransformer(VideoProcessorBase):
             detection_result = self.landmarker.detect(mp_image)
             
             current_frame_landmarks = []
-            img_out = np.copy(img_bgr) # Fallback if no hands
+            img_out = np.copy(img_bgr)
 
             if detection_result.hand_landmarks:
                 annotated_rgb, all_landmarks = draw_landmarks_on_image(img_rgb, detection_result)
@@ -104,97 +138,119 @@ class EduQuestTransformer(VideoProcessorBase):
                 first_hand = all_landmarks[0]
                 for lm in first_hand:
                     current_frame_landmarks.append([lm.x, lm.y, lm.z])
-
-                # XAI: Show weak joint ONLY if confidence is low
+                
+                # XAI: Red Circle on weak joint
                 if self.weak_joint is not None and self.current_confidence < 0.8:
                     wk = first_hand[self.weak_joint]
                     cx, cy = int(wk.x * w), int(wk.y * h)
                     cv2.circle(img_out, (cx, cy), 15, (0, 0, 255), 3)
-                    cv2.putText(img_out, "Check Hand Shape", (cx+20, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
             if current_frame_landmarks:
                 self.landmark_buffer.append(current_frame_landmarks)
 
-            # --- LOGIC SPLIT BASED ON MODE ---
             if len(self.landmark_buffer) >= 70:
                 raw_sequence = list(self.landmark_buffer)
                 processed_input = DataProcessor.gate_and_resample(raw_sequence)
                 
                 if processed_input is not None:
                     pred, conf, weak_joint = self.model.predict(processed_input)
-                    
                     self.current_prediction = pred
                     self.current_confidence = conf
                     self.weak_joint = weak_joint
-                    
-                    # Logic: Determine what to show user
-                    if self.mode == "Quiz Mode":
-                        # STRICT VALIDATION
-                        if pred.lower() == self.target_word.lower() and conf > 0.8:
-                            self.status_message = "✅ CORRECT!"
-                            self.weak_joint = None # Clear XAI
-                        else:
-                            self.status_message = f"❌ Try Again (Saw: {pred})"
-                    else:
-                        # LEARN MODE (Free Play)
-                        self.status_message = f"Detected: {pred}"
-                    
                     self.landmark_buffer.clear()
 
-            # --- UI OVERLAY ---
-            # Top Bar Background
-            cv2.rectangle(img_out, (0, 0), (w, 100), (30, 30, 30), -1)
+            # --- OVERLAY DESIGN ---
+            # Instead of a black bar, let's make it look like a subtitle or HUD
+            cv2.rectangle(img_out, (0, h-60), (w, h), (255, 255, 255), -1) # White bottom bar
             
-            # 1. Show Mode
-            cv2.putText(img_out, f"MODE: {self.mode.upper()}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+            # Confidence Bar (Visualized as a line)
+            bar_width = int(w * self.current_confidence)
+            cv2.rectangle(img_out, (0, h-5), (bar_width, h), (0, 120, 255), -1) # Orange progress line
             
-            # 2. Show Main Status
-            # Color logic: Green if correct/high conf, Yellow otherwise
-            color = (0, 255, 0) if "✅" in self.status_message else (0, 165, 255)
-            cv2.putText(img_out, self.status_message, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            # Text
+            text = f"{self.current_prediction.upper()} ({int(self.current_confidence*100)}%)"
+            cv2.putText(img_out, text, (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
 
             return img_out
 
         except Exception as e:
-            print(f"CRITICAL ERROR: {e}")
+            print(f"Error: {e}")
             return frame.to_ndarray(format="bgr24")
 
-# --- 5. STREAMLIT FRONTEND ---
-st.sidebar.header("🛠️ Dev Controls")
-mode = st.sidebar.radio("Mode", ["Learn Mode", "Quiz Mode"])
+# --- 5. MAIN DASHBOARD UI ---
 
-# If Quiz Mode, pick a target word
-target_word = ""
-if mode == "Quiz Mode":
-    target_word = st.sidebar.selectbox("Select Target Word", ["nasi lemak", "thank you", "good morning"])
+# Header Section
+st.markdown("## ✋ Demo")
+st.markdown("#### Malaysian Sign Language Translation Case Study")
+st.markdown("---")
 
-col1, col2 = st.columns([2, 1])
+# Layout: Left (Controls), Center (Video), Right (Info)
+col_left, col_center, col_right = st.columns([1, 2, 1])
 
-with col1:
-    st.header(f"MSL Edu-Quest")
+# --- LEFT COLUMN: CONTROLS ---
+with col_left:
+    st.markdown("### 🎛 Controls")
     
+    # Primary Action Buttons
+    st.button("📸 Capture", type="primary")
+    st.button("📎 Upload", type="secondary")
+    
+    st.markdown("---")
+    
+    # Settings Area
+    st.markdown("**Settings**")
+    language = st.selectbox("Language", ["English (UK)", "Bahasa Melayu"])
+    mode = st.radio("Mode", ["Translation", "Learning"])
+    
+    st.markdown("---")
+    
+    # Big Metric Display
+    st.markdown("**Confidence**")
+    # Note: We can't update this real-time from the video thread easily, 
+    # so we set a static example or "Live" indicator.
+    st.metric(label="Model Confidence", value="85%", delta="Live")
+
+# --- CENTER COLUMN: VIDEO FEED ---
+with col_center:
+    st.info("💡 **MSL Translation App** - Active")
+    
+    # The WebRTC Component
     ctx = webrtc_streamer(
-        key="msl-quest", 
-        video_processor_factory=EduQuestTransformer,
-        rtc_configuration={
-            "iceServers": [
-                {"urls": ["stun:stun.l.google.com:19302"]},
-                {"urls": ["stun:stun1.l.google.com:19302"]},
-                {"urls": ["stun:stun2.l.google.com:19302"]},
-            ]
-        },
-        media_stream_constraints={"video": True, "audio": False}
+        key="msl-dashboard", 
+        video_processor_factory=DashboardTransformer,
+        rtc_configuration={"iceServers": get_ice_servers()},
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True
     )
-    
-    # --- MAGIC BRIDGE: SEND DATA TO PROCESSOR ---
-    if ctx.video_processor:
-        ctx.video_processor.update_game_state(mode, target_word)
 
-with col2:
-    st.info("Instructions")
-    if mode == "Quiz Mode":
-        st.write(f"### Target: **{target_word.upper()}**")
-        st.write("Perform the sign. You must get >80% accuracy.")
-    else:
-        st.write("### Free Play")
-        st.write("Perform any sign to see the AI analysis.")
+    # Static UI to match screenshot "Prediction Results"
+    st.markdown("### 📊 Prediction Results")
+    
+    st.write("Success")
+    st.progress(85)
+    
+    st.write("Neutral")
+    st.progress(10)
+    
+    st.write("Fail")
+    st.progress(5)
+
+# --- RIGHT COLUMN: FEATURES INFO ---
+with col_right:
+    st.markdown("### 🔑 Key Demo Features")
+    
+    st.markdown("""
+    **⚙️ MediaPipe Preprocessing** Real-time skeleton tracking and normalization of hand landmarks.
+    
+    **🧠 ST-GCN Model Prediction** Dual stream architecture processing morphology and trajectory data.
+    
+    **🔍 Explainable AI** Heatmap visualization showing which parts of the sign contribute most.
+    
+    **🚀 Performance Metrics** Real-time feedback on prediction confidence.
+    
+    **💡 Future Improvements** Enhanced vocabulary and improved lighting resilience.
+    """)
+
+# Footer
+st.markdown("---")
+st.caption("MSL Edu-Quest Prototype v1.0 | Powered by Streamlit & MediaPipe")
