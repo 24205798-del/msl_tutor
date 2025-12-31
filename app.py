@@ -6,7 +6,6 @@ import numpy as np
 import collections
 from processor import DataProcessor
 from mock_model import MockDualStreamModel
-from twilio.rest import Client
 
 # --- 1. PAGE CONFIGURATION & STYLING ---
 st.set_page_config(layout="wide", page_title="MSL Translation App")
@@ -14,21 +13,30 @@ st.set_page_config(layout="wide", page_title="MSL Translation App")
 # Custom CSS to match the "Blue & White" Dashboard look
 st.markdown("""
 <style>
-    /* Main Background */
-    .stApp { background-color: #f0f2f6; }
+    /* Main Background - Light Grey */
+    .stApp { 
+        background-color: #f0f2f6; 
+    }
     
     /* Blue Header Bar */
-    .css-18ni7ap { background-color: #0052cc; color: white; padding: 1rem; }
+    header[data-testid="stHeader"] {
+        background-color: #0052cc;
+    }
+
+    /* Text Color Fix - Force Black/Dark Grey */
+    h1, h2, h3, h4, h5, h6, p, li, span {
+        color: #333333 !important;
+    }
     
-    /* Custom "Card" styling for columns */
-    div.css-1r6slb0.e1tzin5v2 {
+    /* White Card Containers */
+    div.css-1r6slb0.e1tzin5v2, div[data-testid="stVerticalBlock"] > div {
         background-color: white;
         padding: 20px;
         border-radius: 10px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     
-    /* Button Styling to match "Capture" button */
+    /* Button Styling */
     .stButton > button {
         width: 100%;
         border-radius: 5px;
@@ -36,7 +44,7 @@ st.markdown("""
         font-weight: bold;
     }
     
-    /* Hide the default Streamlit hamburger menu/footer for cleaner look */
+    /* Hide default Streamlit footer */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 </style>
@@ -76,18 +84,6 @@ def load_msl_model():
     return MockDualStreamModel()
 
 # --- 3. HELPER FUNCTIONS ---
-def get_ice_servers():
-    """Fetch TURN servers if available, else fallback to STUN."""
-    try:
-        # Use st.secrets in production!
-        # account_sid = st.secrets["twilio"]["account_sid"]
-        # auth_token = st.secrets["twilio"]["auth_token"]
-        # client = Client(account_sid, auth_token)
-        # return client.tokens.create().ice_servers
-        return [{"urls": ["stun:stun.l.google.com:19302"]}]
-    except:
-        return [{"urls": ["stun:stun.l.google.com:19302"]}]
-
 def draw_landmarks_on_image(rgb_image, detection_result):
     hand_landmarks_list = detection_result.hand_landmarks
     annotated_image = np.copy(rgb_image)
@@ -160,8 +156,8 @@ class DashboardTransformer(VideoProcessorBase):
                     self.landmark_buffer.clear()
 
             # --- OVERLAY DESIGN ---
-            # Instead of a black bar, let's make it look like a subtitle or HUD
-            cv2.rectangle(img_out, (0, h-60), (w, h), (255, 255, 255), -1) # White bottom bar
+            # White bottom bar
+            cv2.rectangle(img_out, (0, h-60), (w, h), (255, 255, 255), -1) 
             
             # Confidence Bar (Visualized as a line)
             bar_width = int(w * self.current_confidence)
@@ -179,7 +175,6 @@ class DashboardTransformer(VideoProcessorBase):
 
 # --- 5. MAIN DASHBOARD UI ---
 
-# Header Section
 st.markdown("## ✋ Demo")
 st.markdown("#### Malaysian Sign Language Translation Case Study")
 st.markdown("---")
@@ -206,8 +201,6 @@ with col_left:
     
     # Big Metric Display
     st.markdown("**Confidence**")
-    # Note: We can't update this real-time from the video thread easily, 
-    # so we set a static example or "Live" indicator.
     st.metric(label="Model Confidence", value="85%", delta="Live")
 
 # --- CENTER COLUMN: VIDEO FEED ---
@@ -218,7 +211,9 @@ with col_center:
     ctx = webrtc_streamer(
         key="msl-dashboard", 
         video_processor_factory=DashboardTransformer,
-        rtc_configuration={"iceServers": get_ice_servers()},
+        rtc_configuration={
+            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+        },
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True
     )
@@ -226,13 +221,13 @@ with col_center:
     # Static UI to match screenshot "Prediction Results"
     st.markdown("### 📊 Prediction Results")
     
-    st.write("Success")
+    st.write("**Success**")
     st.progress(85)
     
-    st.write("Neutral")
+    st.write("**Neutral**")
     st.progress(10)
     
-    st.write("Fail")
+    st.write("**Fail**")
     st.progress(5)
 
 # --- RIGHT COLUMN: FEATURES INFO ---
@@ -253,4 +248,5 @@ with col_right:
 
 # Footer
 st.markdown("---")
-st.caption("MSL Edu-Quest Prototype v1.0 | Powered by Streamlit & MediaPipe")
+# UPDATED: Changed from Edu-Quest to MSL Translation App
+st.caption("MSL Translation App Prototype v1.0 | Powered by Streamlit & MediaPipe")
